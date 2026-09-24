@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import handleFlats from './api/flats.js';
 import handleHealth from './api/health.js';
+import handleOneMap from './api/onemap.js';
 import dns from 'dns';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -25,6 +26,7 @@ async function startServer() {
   // Register shared API route handlers
   app.get('/api/flats', handleFlats);
   app.get('/api/health', handleHealth);
+  app.all('/api/onemap', handleOneMap);
 
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));

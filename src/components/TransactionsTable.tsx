@@ -7,6 +7,8 @@ interface TransactionsTableProps {
   maxBudget: number | null;
   town: string;
   flatType: string;
+  selectedRecordId?: string | number | null;
+  onSelectRecord?: (record: TransactionRecord) => void;
 }
 
 type SortField = 'resalePrice' | 'month' | 'floorAreaSqm' | 'remainingLeaseYears' | 'pricePerSqm';
@@ -17,6 +19,8 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = ({
   maxBudget,
   town,
   flatType,
+  selectedRecordId,
+  onSelectRecord,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortField, setSortField] = useState<SortField>('month');
@@ -152,11 +156,17 @@ export const TransactionsTable: React.FC<TransactionsTableProps> = ({
           <tbody className="divide-y divide-slate-100">
             {displayedRecords.map((r) => {
               const inBudget = maxBudget === null || r.resalePrice <= maxBudget;
+              const isSelected = selectedRecordId === r.id;
               return (
                 <tr
                   key={r.id}
-                  className={`hover:bg-slate-50/80 transition-colors ${
-                    !inBudget ? 'opacity-60 bg-slate-50/40' : ''
+                  onClick={() => onSelectRecord?.(r)}
+                  className={`cursor-pointer transition-colors ${
+                    isSelected
+                      ? 'bg-indigo-50/90 font-medium'
+                      : inBudget
+                      ? 'hover:bg-slate-50/80'
+                      : 'opacity-60 bg-slate-50/30 hover:bg-slate-50/60'
                   }`}
                 >
                   <td className="py-3 px-4 font-medium text-slate-800 whitespace-nowrap">

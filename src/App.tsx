@@ -4,10 +4,11 @@ import { FilterPanel } from './components/FilterPanel';
 import { SummaryCards } from './components/SummaryCards';
 import { TrendChart } from './components/TrendChart';
 import { BudgetAffordabilityCard } from './components/BudgetAffordabilityCard';
+import { MapNavigator } from './components/MapNavigator';
 import { TransactionsTable } from './components/TransactionsTable';
 import { Footer } from './components/Footer';
-import { FlatsApiResponse } from './types';
-import { AlertCircle, RefreshCw, Info, Building2, SearchX } from 'lucide-react';
+import { FlatsApiResponse, TransactionRecord } from './types';
+import { AlertCircle, RefreshCw, SearchX, MapPin, BarChart3 } from 'lucide-react';
 
 export default function App() {
   const [town, setTown] = useState<string>('TAMPINES');
@@ -16,6 +17,7 @@ export default function App() {
   const [data, setData] = useState<FlatsApiResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedRecordId, setSelectedRecordId] = useState<string | number | null>(null);
 
   // Fetch data from backend API endpoint (/api/flats)
   const fetchFlatsData = useCallback(async (targetTown: string, targetFlatType: string, targetBudget: number | null) => {
@@ -40,6 +42,8 @@ export default function App() {
 
       const json: FlatsApiResponse = await res.json();
       setData(json);
+      // Reset selected record if no longer in new records
+      setSelectedRecordId(null);
     } catch (err: any) {
       setError(err?.message || 'Failed to load HDB resale flat data. Please try again.');
     } finally {
@@ -56,6 +60,10 @@ export default function App() {
     setTown('TAMPINES');
     setFlatType('4 ROOM');
     setBudget(null);
+  };
+
+  const handleSelectRecord = (record: TransactionRecord | null) => {
+    setSelectedRecordId(record ? record.id : null);
   };
 
   return (
@@ -103,11 +111,11 @@ export default function App() {
                 <div key={n} className="h-28 bg-white rounded-2xl border border-slate-200" />
               ))}
             </div>
+            <div className="h-96 bg-white rounded-2xl border border-slate-200" />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="h-80 bg-white rounded-2xl border border-slate-200" />
               <div className="h-80 bg-white rounded-2xl border border-slate-200" />
             </div>
-            <div className="h-64 bg-white rounded-2xl border border-slate-200" />
           </div>
         )}
 
@@ -153,6 +161,16 @@ export default function App() {
               flatType={flatType}
             />
 
+            {/* SLA OneMap Interactive Geospatial Navigator */}
+            <MapNavigator
+              records={data.records}
+              town={town}
+              flatType={flatType}
+              maxBudget={budget}
+              selectedRecordId={selectedRecordId}
+              onSelectRecord={handleSelectRecord}
+            />
+
             {/* Middle Grid: Trend Chart & Budget Affordability Section */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Monthly Trend Chart */}
@@ -181,6 +199,8 @@ export default function App() {
                 maxBudget={budget}
                 town={town}
                 flatType={flatType}
+                selectedRecordId={selectedRecordId}
+                onSelectRecord={handleSelectRecord}
               />
             )}
           </div>
