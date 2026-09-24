@@ -12,10 +12,15 @@ import {
   Footprints,
   RefreshCw,
   Eye,
-  Check
+  Check,
+  Building2,
+  Clock,
+  ArrowRight,
+  Maximize2
 } from 'lucide-react';
 import { TransactionRecord } from '../types';
 import { OneMapSettingsModal } from './OneMapSettingsModal';
+import { getNearestMRTStation, NearestMRTResult } from '../utils/mrtStations';
 
 export const TOWN_CENTERS: Record<string, [number, number]> = {
   'ANG MO KIO': [1.3691, 103.8454],
@@ -122,9 +127,11 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const routeLayerRef = useRef<L.Polyline | null>(null);
+  const mrtMarkerRef = useRef<L.Marker | null>(null);
   const searchMarkerRef = useRef<L.Marker | null>(null);
   const isMapPannedRef = useRef<boolean>(false);
   const moveDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markersMapRef = useRef<Map<string | number, L.Marker>>(new Map());
 
   const [basemapStyle, setBasemapStyle] = useState<keyof typeof ONEMAP_BASEMAPS>('Default');
   const [inBudgetOnly, setInBudgetOnly] = useState(false);
@@ -142,6 +149,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     distance?: string;
     time?: string;
     routeType?: string;
+    destinationName?: string;
     instructions?: string[];
   } | null>(null);
   const [isRouting, setIsRouting] = useState(false);
@@ -157,6 +165,23 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
   const selectedRecord = useMemo(() => {
     return records.find((r) => r.id === selectedRecordId) || null;
   }, [records, selectedRecordId]);
+
+  // Coordinates of selected flat
+  const selectedCoords = useMemo(() => {
+    if (!selectedRecord) return null;
+    const fullAddr = `${selectedRecord.block ? `${selectedRecord.block} ` : ''}${selectedRecord.streetName}`.trim();
+    const cached = coordsCache[fullAddr];
+    if (cached && Number.isFinite(cached.lat) && Number.isFinite(cached.lng)) {
+      return { lat: cached.lat, lng: cached.lng };
+    }
+    return { lat: townCenter[0], lng: townCenter[1] };
+  }, [selectedRecord, coordsCache, townCenter]);
+
+  // Nearest MRT Station to selected flat
+  const nearestMRT = useMemo<NearestMRTResult | null>(() => {
+    if (!selectedCoords) return null;
+    return getNearestMRTStation(selectedCoords.lat, selectedCoords.lng);
+  }, [selectedCoords]);
 
   // Compute which records are within visible map viewport
   const updateVisibleRecords = useCallback(() => {
@@ -202,7 +227,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
 
     if (nearest.town !== town) {
       if (autoSyncArea) {
-        // Flag that town update was initiated by user panning
         isMapPannedRef.current = true;
         setAreaToast(`Area changed to ${nearest.town}`);
         setTimeout(() => setAreaToast(null), 3000);
@@ -228,7 +252,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
       zoomControl: false,
     });
 
-    // Custom zoom control in bottom right
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
     const tileLayer = L.tileLayer(ONEMAP_BASEMAPS[basemapStyle].url, {
@@ -239,7 +262,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
 
     const markersGroup = L.layerGroup().addTo(map);
 
-    // Attach moveend listener
     map.on('moveend', () => {
       if (moveDebounceTimerRef.current) {
         clearTimeout(moveDebounceTimerRef.current);
@@ -276,7 +298,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     if (!mapRef.current) return;
 
     if (isMapPannedRef.current) {
-      // User moved the map to this area; keep their current view!
       isMapPannedRef.current = false;
       return;
     }
@@ -322,19 +343,19 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     };
   }, [records, town]);
 
-  // 5. Render Markers on Map
+  // 5. Render Markers on Map with Interactive Popup Widgets
   useEffect(() => {
     if (!mapRef.current || !markersLayerRef.current) return;
 
     const layer = markersLayerRef.current;
     layer.clearLayers();
+    markersMapRef.current.clear();
 
     const displayRecords = inBudgetOnly && maxBudget !== null
       ? records.filter((r) => r.resalePrice <= maxBudget)
       : records;
 
-    // Plot pins
-    displayRecords.slice(0, 35).forEach((r, idx) => {
+    displayRecords.slice(0, 40).forEach((r, idx) => {
       const fullAddr = `${r.block ? `${r.block} ` : ''}${r.streetName}`.trim();
       const cached = coordsCache[fullAddr];
 
@@ -345,7 +366,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
         lat = cached.lat;
         lng = cached.lng;
       } else {
-        // Fallback: slight circular dispersion around town center
         const angle = (idx / 35) * Math.PI * 2;
         const radius = 0.003 + (idx % 5) * 0.002;
         lat = townCenter[0] + Math.sin(angle) * radius;
@@ -384,14 +404,99 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
 
       const marker = L.marker([lat, lng], { icon });
 
+      // Calculate nearest MRT for this marker's popup
+      const mrtInfo = getNearestMRTStation(lat, lng);
+
+      // Embedded Rich Leaflet Popup Widget
+      const popupHtml = `
+        <div class="p-3.5 bg-white text-slate-800 text-xs w-72 select-text font-sans">
+          <!-- Location & Model Header -->
+          <div class="pb-2 border-b border-slate-100">
+            <div class="flex items-center justify-between gap-1 mb-1">
+              <span class="text-[10px] font-bold uppercase tracking-wider text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
+                ${r.flatType} · ${r.flatModel}
+              </span>
+              <span class="text-[10px] font-semibold ${inBudget ? 'text-emerald-700 bg-emerald-50' : 'text-slate-500 bg-slate-100'} px-1.5 py-0.5 rounded">
+                ${inBudget ? 'Within Budget' : 'Over Budget'}
+              </span>
+            </div>
+            <h4 class="font-bold text-slate-900 text-sm leading-snug">
+              ${r.block ? `Blk ${r.block} ` : ''}${r.streetName}
+            </h4>
+            <div class="text-[11px] text-slate-500 mt-0.5">
+              ${r.town} · Storey ${r.storeyRange}
+            </div>
+          </div>
+
+          <!-- Basic Flat Specs Grid -->
+          <div class="py-2.5 grid grid-cols-2 gap-2 text-xs border-b border-slate-100">
+            <div>
+              <span class="text-slate-400 text-[10px] uppercase font-semibold block">Resale Price</span>
+              <span class="text-sm font-bold text-slate-900">$${r.resalePrice.toLocaleString()}</span>
+              <span class="text-[10px] text-slate-500 block">$${r.pricePerSqm.toLocaleString()} / sqm</span>
+            </div>
+            <div>
+              <span class="text-slate-400 text-[10px] uppercase font-semibold block">Floor Area</span>
+              <span class="text-sm font-semibold text-slate-900">${r.floorAreaSqm} sqm</span>
+              <span class="text-[10px] text-slate-500 block">~${r.floorAreaSqft} sqft</span>
+            </div>
+            <div class="col-span-2 pt-1 flex items-center justify-between text-[11px]">
+              <span class="text-slate-500">Remaining Lease:</span>
+              <span class="font-semibold text-slate-800">${r.remainingLeaseYears} yrs (${r.remainingLease})</span>
+            </div>
+          </div>
+
+          <!-- Nearest MRT Station & Walking Minutes -->
+          <div class="mt-2.5 p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-950">
+            <div class="flex items-center justify-between">
+              <span class="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Nearest MRT Station</span>
+              <span class="inline-flex items-center text-[11px] font-bold text-amber-900 bg-amber-100/90 px-1.5 py-0.5 rounded-full">
+                🚶 ${mrtInfo.walkingMinutes} mins walk
+              </span>
+            </div>
+            <div class="text-xs font-bold text-slate-900 mt-1 flex items-center gap-1">
+              <span>🚇 ${mrtInfo.station.name} MRT</span>
+              <span class="text-[10px] font-semibold text-amber-700 bg-white px-1 rounded border border-amber-200">
+                ${mrtInfo.station.code}
+              </span>
+            </div>
+            <div class="text-[10px] text-slate-500 mt-0.5 flex items-center justify-between">
+              <span>${mrtInfo.station.line}</span>
+              <span>~${mrtInfo.straightDistanceMeters}m away</span>
+            </div>
+          </div>
+        </div>
+      `;
+
+      marker.bindPopup(popupHtml, {
+        className: 'hdb-flat-popup',
+        maxWidth: 320,
+        minWidth: 280,
+        offset: [0, -14],
+        closeButton: true,
+      });
+
       marker.on('click', () => {
         onSelectRecord(r);
+        marker.openPopup();
         mapRef.current?.flyTo([lat, lng], 16, { duration: 0.8 });
       });
 
+      markersMapRef.current.set(r.id, marker);
       layer.addLayer(marker);
     });
-  }, [records, coordsCache, inBudgetOnly, maxBudget, selectedRecordId, townCenter]);
+  }, [records, coordsCache, inBudgetOnly, maxBudget, selectedRecordId, townCenter, onSelectRecord]);
+
+  // When selectedRecordId changes externally (e.g. table row click), pan and open marker popup
+  useEffect(() => {
+    if (!selectedRecordId || !mapRef.current) return;
+    const marker = markersMapRef.current.get(selectedRecordId);
+    if (marker) {
+      marker.openPopup();
+      const latLng = marker.getLatLng();
+      mapRef.current.flyTo(latLng, 16, { duration: 0.8 });
+    }
+  }, [selectedRecordId]);
 
   // 6. Handle OneMap Search
   const handleSearchSubmit = async (e: React.FormEvent) => {
@@ -447,7 +552,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     mapRef.current.flyTo([lat, lng], 16, { duration: 1.0 });
     setSearchResults([]);
 
-    // Check nearest town and notify
     const nearest = findNearestTown(lat, lng);
     if (nearest.town !== town && onTownChange) {
       isMapPannedRef.current = true;
@@ -457,16 +561,32 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
 
   // 7. Request Route to Destination / MRT using OneMap Routing
   const requestRoute = async (destLat: number, destLng: number, destName: string, mode: string = 'walk') => {
-    if (!selectedRecord) return;
-
-    const fullAddr = `${selectedRecord.block ? `${selectedRecord.block} ` : ''}${selectedRecord.streetName}`.trim();
-    const origin = coordsCache[fullAddr] || { lat: townCenter[0], lng: townCenter[1] };
+    if (!selectedCoords) return;
 
     setIsRouting(true);
     setRoutingError(null);
 
-    const start = `${origin.lat},${origin.lng}`;
+    const start = `${selectedCoords.lat},${selectedCoords.lng}`;
     const end = `${destLat},${destLng}`;
+
+    // Plot destination marker for MRT
+    if (mapRef.current) {
+      if (mrtMarkerRef.current) mrtMarkerRef.current.remove();
+      const mrtIcon = L.divIcon({
+        className: 'mrt-pin',
+        html: `
+          <div class="w-7 h-7 rounded-full bg-amber-600 text-white flex items-center justify-center font-bold text-xs shadow-md border-2 border-white ring-2 ring-amber-300">
+            🚇
+          </div>
+        `,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+      });
+      mrtMarkerRef.current = L.marker([destLat, destLng], { icon: mrtIcon })
+        .addTo(mapRef.current)
+        .bindPopup(`<strong>${destName}</strong>`)
+        .openPopup();
+    }
 
     try {
       const res = await fetch(`/api/onemap?action=route&start=${start}&end=${end}&routeType=${mode}`);
@@ -474,20 +594,21 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
 
       if (!res.ok) {
         if (data.requiresToken) {
-          const distKm = Math.round(L.latLng(origin.lat, origin.lng).distanceTo(L.latLng(destLat, destLng))) / 1000;
-          const estMin = Math.round((distKm / 4.5) * 60);
+          const distKm = Math.round(L.latLng(selectedCoords.lat, selectedCoords.lng).distanceTo(L.latLng(destLat, destLng))) / 1000;
+          const estMin = Math.max(1, Math.round((distKm / 4.5) * 60));
 
           setActiveRoute({
-            summary: `Approx. ${distKm.toFixed(2)} km straight-line distance (~${estMin} mins walk).`,
-            distance: `${distKm.toFixed(2)} km`,
+            summary: `Direct distance ~${(distKm * 1000).toFixed(0)}m (${estMin} mins walk to ${destName})`,
+            distance: `${(distKm * 1000).toFixed(0)} m`,
             time: `~${estMin} mins`,
             routeType: mode,
+            destinationName: destName,
             instructions: [
-              'OneMap official routing API requires an authenticated token.',
-              'Click the gear icon in the map toolbar to mint or enter a token, or view the estimated direct distance shown above.',
+              `Direct walking path: ~${estMin} mins to ${destName}.`,
+              'OneMap detailed turn-by-turn API is ready — mint or enter token in settings to view exact turn paths.',
             ],
           });
-          drawStraightLineRoute([origin.lat, origin.lng], [destLat, destLng]);
+          drawStraightLineRoute([selectedCoords.lat, selectedCoords.lng], [destLat, destLng]);
           return;
         }
         throw new Error(data.error || 'Routing request failed');
@@ -509,10 +630,11 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
       }
 
       setActiveRoute({
-        summary: data.route_summary ? `${data.route_summary.total_time} mins (${(data.route_summary.total_distance / 1000).toFixed(1)} km)` : `${destName}`,
-        distance: data.route_summary ? `${(data.route_summary.total_distance / 1000).toFixed(1)} km` : undefined,
+        summary: data.route_summary ? `${Math.round(data.route_summary.total_time / 60)} mins (${(data.route_summary.total_distance).toFixed(0)} m)` : `${destName}`,
+        distance: data.route_summary ? `${data.route_summary.total_distance.toFixed(0)} m` : undefined,
         time: data.route_summary ? `${Math.round(data.route_summary.total_time / 60)} mins` : undefined,
         routeType: mode,
+        destinationName: destName,
         instructions: data.route_instructions || [],
       });
     } catch (err: any) {
@@ -530,7 +652,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     const line = L.polyline([from, to], {
       color: '#4f46e5',
       weight: 3,
-      opacity: 0.7,
+      opacity: 0.75,
       dashArray: '5 7',
     }).addTo(mapRef.current);
     routeLayerRef.current = line;
@@ -586,7 +708,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
             )}
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Pan or zoom the map to explore resale transactions in any Singapore estate in real time
+            Click any property pin to view flat specifications, price/sqm, and walking minutes to the nearest MRT station
           </p>
         </div>
 
@@ -680,7 +802,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
       </div>
 
       {/* Map + Search Container */}
-      <div className="relative w-full h-[480px] sm:h-[540px]">
+      <div className="relative w-full h-[500px] sm:h-[560px]">
         {/* Floating Area Discovery Action Banner */}
         {discoveredTown && !autoSyncArea && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 animate-in fade-in slide-in-from-top-2 duration-150">
@@ -756,47 +878,58 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
           )}
         </div>
 
-        {/* Selected Transaction Detail Drawer Overlay */}
+        {/* Selected Property Popup Information Widget */}
         {selectedRecord && (
           <div className="absolute top-3 right-3 z-20 max-w-xs sm:max-w-sm w-full bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200 p-4 animate-in fade-in slide-in-from-right-4 duration-200">
+            {/* Header: Location & Model */}
             <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100">
               <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded-sm">
-                  {selectedRecord.flatType} · {selectedRecord.flatModel}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
+                    {selectedRecord.flatType}
+                  </span>
+                  <span className="text-[10px] font-medium text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded">
+                    {selectedRecord.flatModel}
+                  </span>
+                </div>
                 <h3 className="text-sm font-bold text-slate-900 mt-1">
                   {selectedRecord.block ? `Blk ${selectedRecord.block} ` : ''}
                   {selectedRecord.streetName}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  {selectedRecord.town} · Storey {selectedRecord.storeyRange}
+                  {selectedRecord.town}
                 </p>
               </div>
 
               <button
                 type="button"
-                onClick={() => onSelectRecord(null)}
+                onClick={() => {
+                  onSelectRecord(null);
+                  if (routeLayerRef.current) routeLayerRef.current.remove();
+                  if (mrtMarkerRef.current) mrtMarkerRef.current.remove();
+                  setActiveRoute(null);
+                }}
                 className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-                aria-label="Close details"
+                aria-label="Close widget"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Price & Specs */}
+            {/* Basic Information Breakdown */}
             <div className="py-2.5 grid grid-cols-2 gap-2 text-xs">
               <div>
-                <span className="text-slate-400 text-[11px]">Resale Price</span>
+                <span className="text-slate-400 text-[10px] uppercase font-semibold">Resale Price</span>
                 <div className="text-base font-bold text-slate-900">
                   ${selectedRecord.resalePrice.toLocaleString()}
                 </div>
-                <div className="text-[10px] text-slate-500">
+                <div className="text-[11px] font-semibold text-indigo-700">
                   ${selectedRecord.pricePerSqm.toLocaleString()} / sqm
                 </div>
               </div>
 
               <div>
-                <span className="text-slate-400 text-[11px]">Floor Area</span>
+                <span className="text-slate-400 text-[10px] uppercase font-semibold">Floor Area</span>
                 <div className="text-sm font-semibold text-slate-800">
                   {selectedRecord.floorAreaSqm} sqm
                 </div>
@@ -805,71 +938,110 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
                 </div>
               </div>
 
-              <div className="col-span-2 pt-1 border-t border-slate-100 flex items-center justify-between text-[11px]">
+              <div className="col-span-2 pt-1 border-t border-slate-100 flex items-center justify-between text-xs">
+                <span className="text-slate-500">Flat Storey:</span>
+                <span className="font-semibold text-slate-900">
+                  Storey {selectedRecord.storeyRange}
+                </span>
+              </div>
+
+              <div className="col-span-2 flex items-center justify-between text-xs">
                 <span className="text-slate-500">Remaining Lease:</span>
-                <span className="font-semibold text-slate-800">
-                  {selectedRecord.remainingLeaseYears} years ({selectedRecord.remainingLease})
+                <span className="font-semibold text-slate-900">
+                  {selectedRecord.remainingLeaseYears} yrs ({selectedRecord.remainingLease})
                 </span>
               </div>
             </div>
 
-            {/* Routing Action Buttons */}
-            <div className="pt-2 border-t border-slate-100">
-              <span className="text-[11px] font-semibold text-slate-600 block mb-1.5">
-                Calculate OneMap Route to:
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    requestRoute(townCenter[0], townCenter[1], `${town} MRT Station`, 'walk');
-                  }}
-                  disabled={isRouting}
-                  className="px-2 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[11px] font-medium transition-colors flex items-center gap-1 border border-indigo-200"
-                >
-                  <Footprints className="w-3 h-3" />
-                  {town} MRT
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    requestRoute(1.2850, 103.8500, 'Raffles Place (CBD)', 'pt');
-                  }}
-                  disabled={isRouting}
-                  className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-medium transition-colors flex items-center gap-1"
-                >
-                  <Train className="w-3 h-3" />
-                  CBD / Raffles Place
-                </button>
-              </div>
-
-              {/* Active Route Result Card */}
-              {activeRoute && (
-                <div className="mt-2.5 p-2 rounded-xl bg-indigo-50/80 border border-indigo-200 text-xs">
-                  <div className="flex items-center justify-between font-semibold text-indigo-950">
-                    <span>Route Summary:</span>
-                    <span>{activeRoute.distance}</span>
+            {/* Nearest MRT Station & Walking Minutes Widget Card */}
+            {nearestMRT && (
+              <div className="mt-1 pt-2.5 border-t border-slate-100">
+                <div className="p-2.5 rounded-xl bg-amber-50/90 border border-amber-200">
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-[10px] font-bold text-amber-900 uppercase tracking-wider flex items-center gap-1">
+                      <Train className="w-3.5 h-3.5 text-amber-700" />
+                      Nearest MRT Station
+                    </span>
+                    <span className="font-bold text-xs text-amber-900 bg-amber-200/70 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                      <Footprints className="w-3 h-3 text-amber-800" />
+                      {nearestMRT.walkingMinutes} mins walk
+                    </span>
                   </div>
-                  <div className="text-[11px] text-indigo-800 mt-0.5">
-                    {activeRoute.summary}
+
+                  <div className="flex items-baseline justify-between mt-1">
+                    <span className="text-sm font-bold text-slate-900">
+                      {nearestMRT.station.name} MRT
+                    </span>
+                    <span className="text-xs font-semibold text-amber-800 bg-white px-1.5 py-0.5 rounded border border-amber-200">
+                      {nearestMRT.station.code}
+                    </span>
                   </div>
-                  {activeRoute.instructions && activeRoute.instructions.length > 0 && (
-                    <div className="mt-1 text-[10px] text-slate-600 max-h-20 overflow-y-auto">
-                      {activeRoute.instructions.slice(0, 2).map((inst, i) => (
-                        <div key={i} className="truncate">• {inst}</div>
-                      ))}
+
+                  <div className="flex items-center justify-between text-[11px] text-slate-500 mt-0.5">
+                    <span>{nearestMRT.station.line}</span>
+                    <span>~{nearestMRT.straightDistanceMeters}m straight-line</span>
+                  </div>
+
+                  {/* Quick Action: Draw Walking Route to this MRT */}
+                  <div className="mt-2.5 flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        requestRoute(
+                          nearestMRT.station.lat,
+                          nearestMRT.station.lng,
+                          `${nearestMRT.station.name} MRT`,
+                          'walk'
+                        );
+                      }}
+                      disabled={isRouting}
+                      className="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 shadow-2xs disabled:opacity-50"
+                    >
+                      <Footprints className="w-3.5 h-3.5" />
+                      <span>{isRouting ? 'Calculating...' : `Walk to ${nearestMRT.station.name} MRT`}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        requestRoute(1.2841, 103.8515, 'Raffles Place (CBD)', 'pt');
+                      }}
+                      disabled={isRouting}
+                      className="py-1.5 px-2.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold transition-colors border border-slate-200 shadow-2xs"
+                      title="Route to Central Business District"
+                    >
+                      CBD Transit
+                    </button>
+                  </div>
+                </div>
+
+                {/* Active Route Details Banner */}
+                {activeRoute && (
+                  <div className="mt-2 p-2 rounded-xl bg-indigo-50 border border-indigo-200 text-xs animate-in fade-in duration-150">
+                    <div className="flex items-center justify-between font-semibold text-indigo-950">
+                      <span>Route to {activeRoute.destinationName}:</span>
+                      <span className="text-indigo-700">{activeRoute.distance}</span>
                     </div>
-                  )}
-                </div>
-              )}
+                    <div className="text-[11px] text-indigo-800 mt-0.5">
+                      {activeRoute.summary}
+                    </div>
+                    {activeRoute.instructions && activeRoute.instructions.length > 0 && (
+                      <div className="mt-1 text-[10px] text-slate-600 max-h-16 overflow-y-auto">
+                        {activeRoute.instructions.slice(0, 2).map((inst, i) => (
+                          <div key={i} className="truncate">• {inst}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
-              {routingError && (
-                <div className="mt-2 p-2 rounded-xl bg-rose-50 border border-rose-200 text-[11px] text-rose-700">
-                  {routingError}
-                </div>
-              )}
-            </div>
+                {routingError && (
+                  <div className="mt-2 p-2 rounded-xl bg-rose-50 border border-rose-200 text-[11px] text-rose-700">
+                    {routingError}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -895,7 +1067,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
         </div>
 
         <div className="text-[11px] text-slate-500">
-          Showing <strong>{visibleCount}</strong> visible transactions in current view · Pan the map anywhere in Singapore to explore new areas
+          Showing <strong>{visibleCount}</strong> visible transactions · Click any property pin to pop up flat specifications & nearest MRT walking minutes
         </div>
       </div>
 
