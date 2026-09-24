@@ -1,0 +1,6 @@
+{
+  "name": "HDB Resale Flat Price Explorer",
+  "description": "Interactive Singapore HDB resale flat price explorer with real-time monthly price trends, budget purchasing power breakdown, and data.gov.sg integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
