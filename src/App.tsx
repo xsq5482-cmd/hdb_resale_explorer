@@ -8,7 +8,7 @@ import { MapNavigator } from './components/MapNavigator';
 import { TransactionsTable } from './components/TransactionsTable';
 import { Footer } from './components/Footer';
 import { FlatsApiResponse, TransactionRecord } from './types';
-import { AlertCircle, RefreshCw, SearchX, MapPin, BarChart3 } from 'lucide-react';
+import { AlertCircle, RefreshCw, SearchX } from 'lucide-react';
 
 export default function App() {
   const [town, setTown] = useState<string>('TAMPINES');
@@ -18,6 +18,10 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedRecordId, setSelectedRecordId] = useState<string | number | null>(null);
+
+  // Map viewport-driven list following
+  const [filterToMapBounds, setFilterToMapBounds] = useState<boolean>(true);
+  const [visibleRecordIds, setVisibleRecordIds] = useState<Set<string | number> | null>(null);
 
   // Fetch data from backend API endpoint (/api/flats)
   const fetchFlatsData = useCallback(async (targetTown: string, targetFlatType: string, targetBudget: number | null) => {
@@ -65,6 +69,12 @@ export default function App() {
   const handleSelectRecord = (record: TransactionRecord | null) => {
     setSelectedRecordId(record ? record.id : null);
   };
+
+  const handleTownChangeFromMap = useCallback((newTown: string) => {
+    if (newTown !== town) {
+      setTown(newTown);
+    }
+  }, [town]);
 
   return (
     <div className="min-h-screen bg-slate-50/60 flex flex-col font-sans antialiased text-slate-900">
@@ -161,7 +171,7 @@ export default function App() {
               flatType={flatType}
             />
 
-            {/* SLA OneMap Interactive Geospatial Navigator */}
+            {/* SLA OneMap Interactive Geospatial Navigator with Real-Time Area Following */}
             <MapNavigator
               records={data.records}
               town={town}
@@ -169,6 +179,10 @@ export default function App() {
               maxBudget={budget}
               selectedRecordId={selectedRecordId}
               onSelectRecord={handleSelectRecord}
+              onTownChange={handleTownChangeFromMap}
+              onVisibleRecordsChange={setVisibleRecordIds}
+              filterToMapBounds={filterToMapBounds}
+              onToggleFilterToMapBounds={setFilterToMapBounds}
             />
 
             {/* Middle Grid: Trend Chart & Budget Affordability Section */}
@@ -192,7 +206,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Bottom: Filtered Recent Resale Transactions Table */}
+            {/* Bottom: Filtered Recent Resale Transactions Table (Follows Map Area) */}
             {data.records.length > 0 && (
               <TransactionsTable
                 records={data.records}
@@ -201,6 +215,9 @@ export default function App() {
                 flatType={flatType}
                 selectedRecordId={selectedRecordId}
                 onSelectRecord={handleSelectRecord}
+                filterToMapBounds={filterToMapBounds}
+                onToggleFilterToMapBounds={setFilterToMapBounds}
+                visibleRecordIds={visibleRecordIds}
               />
             )}
           </div>

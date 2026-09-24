@@ -1,24 +1,18 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import {
   MapPin,
   Navigation,
   Search,
-  SlidersHorizontal,
   Layers,
   Settings,
   X,
   Compass,
-  CheckCircle2,
-  Clock,
-  Maximize2,
-  ExternalLink,
-  Footprints,
-  Car,
-  Bike,
   Train,
-  ChevronRight,
-  AlertCircle
+  Footprints,
+  RefreshCw,
+  Eye,
+  Check
 } from 'lucide-react';
 import { TransactionRecord } from '../types';
 import { OneMapSettingsModal } from './OneMapSettingsModal';
@@ -52,6 +46,26 @@ export const TOWN_CENTERS: Record<string, [number, number]> = {
   'YISHUN': [1.4304, 103.8354],
 };
 
+/**
+ * Finds the nearest HDB town given lat/lng coordinates in Singapore
+ */
+export function findNearestTown(lat: number, lng: number): { town: string; distanceKm: number } {
+  let nearestTown = 'TAMPINES';
+  let minDistance = Infinity;
+
+  for (const [townName, [tLat, tLng]] of Object.entries(TOWN_CENTERS)) {
+    const dLat = (lat - tLat) * 111.0;
+    const dLng = (lng - tLng) * 110.97;
+    const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+    if (dist < minDistance) {
+      minDistance = dist;
+      nearestTown = townName;
+    }
+  }
+
+  return { town: nearestTown, distanceKm: minDistance };
+}
+
 const ONEMAP_BASEMAPS = {
   Default: {
     name: 'OneMap Default',
@@ -78,6 +92,10 @@ interface MapNavigatorProps {
   maxBudget: number | null;
   selectedRecordId: string | number | null;
   onSelectRecord: (record: TransactionRecord | null) => void;
+  onTownChange?: (newTown: string) => void;
+  onVisibleRecordsChange?: (visibleIds: Set<string | number>) => void;
+  filterToMapBounds?: boolean;
+  onToggleFilterToMapBounds?: (val: boolean) => void;
 }
 
 interface GeocodedLocation {
@@ -94,6 +112,10 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
   maxBudget,
   selectedRecordId,
   onSelectRecord,
+  onTownChange,
+  onVisibleRecordsChange,
+  filterToMapBounds = true,
+  onToggleFilterToMapBounds,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -101,9 +123,16 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
   const markersLayerRef = useRef<L.LayerGroup | null>(null);
   const routeLayerRef = useRef<L.Polyline | null>(null);
   const searchMarkerRef = useRef<L.Marker | null>(null);
+  const isMapPannedRef = useRef<boolean>(false);
+  const moveDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [basemapStyle, setBasemapStyle] = useState<keyof typeof ONEMAP_BASEMAPS>('Default');
   const [inBudgetOnly, setInBudgetOnly] = useState(false);
+  const [autoSyncArea, setAutoSyncArea] = useState(true);
+  const [discoveredTown, setDiscoveredTown] = useState<string | null>(null);
+  const [areaToast, setAreaToast] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState<number>(records.length);
+
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
@@ -129,6 +158,64 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     return records.find((r) => r.id === selectedRecordId) || null;
   }, [records, selectedRecordId]);
 
+  // Compute which records are within visible map viewport
+  const updateVisibleRecords = useCallback(() => {
+    if (!mapRef.current) return;
+    const bounds = mapRef.current.getBounds();
+    const visibleIds = new Set<string | number>();
+
+    records.forEach((r, idx) => {
+      const fullAddr = `${r.block ? `${r.block} ` : ''}${r.streetName}`.trim();
+      const cached = coordsCache[fullAddr];
+      let lat = townCenter[0];
+      let lng = townCenter[1];
+
+      if (cached && Number.isFinite(cached.lat) && Number.isFinite(cached.lng)) {
+        lat = cached.lat;
+        lng = cached.lng;
+      } else {
+        const angle = (idx / 35) * Math.PI * 2;
+        const radius = 0.003 + (idx % 5) * 0.002;
+        lat = townCenter[0] + Math.sin(angle) * radius;
+        lng = townCenter[1] + Math.cos(angle) * (radius * 1.2);
+      }
+
+      if (bounds.contains([lat, lng])) {
+        visibleIds.add(r.id);
+      }
+    });
+
+    setVisibleCount(visibleIds.size);
+    onVisibleRecordsChange?.(visibleIds);
+  }, [records, coordsCache, townCenter, onVisibleRecordsChange]);
+
+  // Handle map movement end: updates visible records and detects town change
+  const handleMapMoveEnd = useCallback(() => {
+    if (!mapRef.current) return;
+
+    // 1. Immediately update visible records for the current viewport
+    updateVisibleRecords();
+
+    // 2. Check if center of map has moved to another HDB town
+    const center = mapRef.current.getCenter();
+    const nearest = findNearestTown(center.lat, center.lng);
+
+    if (nearest.town !== town) {
+      if (autoSyncArea) {
+        // Flag that town update was initiated by user panning
+        isMapPannedRef.current = true;
+        setAreaToast(`Area changed to ${nearest.town}`);
+        setTimeout(() => setAreaToast(null), 3000);
+        onTownChange?.(nearest.town);
+        setDiscoveredTown(null);
+      } else {
+        setDiscoveredTown(nearest.town);
+      }
+    } else {
+      setDiscoveredTown(null);
+    }
+  }, [town, autoSyncArea, onTownChange, updateVisibleRecords]);
+
   // 1. Initialize Leaflet Map
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
@@ -152,15 +239,31 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
 
     const markersGroup = L.layerGroup().addTo(map);
 
+    // Attach moveend listener
+    map.on('moveend', () => {
+      if (moveDebounceTimerRef.current) {
+        clearTimeout(moveDebounceTimerRef.current);
+      }
+      moveDebounceTimerRef.current = setTimeout(() => {
+        handleMapMoveEnd();
+      }, 350);
+    });
+
     mapRef.current = map;
     tileLayerRef.current = tileLayer;
     markersLayerRef.current = markersGroup;
 
     return () => {
+      if (moveDebounceTimerRef.current) clearTimeout(moveDebounceTimerRef.current);
       map.remove();
       mapRef.current = null;
     };
   }, []);
+
+  // Update visible records when records or cache change
+  useEffect(() => {
+    updateVisibleRecords();
+  }, [records, coordsCache, updateVisibleRecords]);
 
   // 2. Change Basemap
   useEffect(() => {
@@ -168,9 +271,16 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     tileLayerRef.current.setUrl(ONEMAP_BASEMAPS[basemapStyle].url);
   }, [basemapStyle]);
 
-  // 3. Pan to Town Center on Town Change
+  // 3. Pan to Town Center ONLY when changed from filter dropdown, NOT when user panned
   useEffect(() => {
     if (!mapRef.current) return;
+
+    if (isMapPannedRef.current) {
+      // User moved the map to this area; keep their current view!
+      isMapPannedRef.current = false;
+      return;
+    }
+
     mapRef.current.flyTo(townCenter, 14, { duration: 1.2 });
   }, [town]);
 
@@ -336,6 +446,13 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     searchMarkerRef.current = marker;
     mapRef.current.flyTo([lat, lng], 16, { duration: 1.0 });
     setSearchResults([]);
+
+    // Check nearest town and notify
+    const nearest = findNearestTown(lat, lng);
+    if (nearest.town !== town && onTownChange) {
+      isMapPannedRef.current = true;
+      onTownChange(nearest.town);
+    }
   };
 
   // 7. Request Route to Destination / MRT using OneMap Routing
@@ -357,7 +474,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
 
       if (!res.ok) {
         if (data.requiresToken) {
-          // Token required guidance with fallback straight-line calculation
           const distKm = Math.round(L.latLng(origin.lat, origin.lng).distanceTo(L.latLng(destLat, destLng))) / 1000;
           const estMin = Math.round((distKm / 4.5) * 60);
 
@@ -377,9 +493,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
         throw new Error(data.error || 'Routing request failed');
       }
 
-      // Plot route polyline if geometry exists
       if (data.route_geometry && mapRef.current) {
-        // Decode OneMap polyline or points
         const points = decodePolyline(data.route_geometry);
         if (routeLayerRef.current) {
           routeLayerRef.current.remove();
@@ -423,7 +537,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     mapRef.current.fitBounds(line.getBounds(), { padding: [40, 40] });
   };
 
-  // Polyline decoding helper for OneMap / standard Google encoded polylines
   function decodePolyline(str: string, precision = 5) {
     let index = 0, lat = 0, lng = 0, coordinates = [];
     let shift = 0, result = 0, byte = null, factor = Math.pow(10, precision);
@@ -473,12 +586,44 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
             )}
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Explore recent transactions on Singapore SLA's authoritative OneMap base layers
+            Pan or zoom the map to explore resale transactions in any Singapore estate in real time
           </p>
         </div>
 
         {/* Toolbar Controls */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Dynamic Map Bounds List Sync Toggle */}
+          {onToggleFilterToMapBounds && (
+            <button
+              type="button"
+              onClick={() => onToggleFilterToMapBounds(!filterToMapBounds)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 ${
+                filterToMapBounds
+                  ? 'bg-indigo-600 text-white border-indigo-700 shadow-2xs'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+              }`}
+              title="Filter property transactions list to match map viewport"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Visible Map Area ({visibleCount})</span>
+            </button>
+          )}
+
+          {/* Auto-search as map moves Toggle */}
+          <button
+            type="button"
+            onClick={() => setAutoSyncArea(!autoSyncArea)}
+            className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 ${
+              autoSyncArea
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+            }`}
+            title="Automatically load resale transactions as you pan to a new town"
+          >
+            {autoSyncArea ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <RefreshCw className="w-3.5 h-3.5 text-slate-400" />}
+            <span>Auto-Search Area: {autoSyncArea ? 'ON' : 'OFF'}</span>
+          </button>
+
           {/* Basemap Switcher */}
           <div className="inline-flex rounded-lg bg-white border border-slate-200 p-0.5 text-xs shadow-2xs">
             {(Object.keys(ONEMAP_BASEMAPS) as Array<keyof typeof ONEMAP_BASEMAPS>).map((mode) => (
@@ -486,7 +631,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
                 key={mode}
                 type="button"
                 onClick={() => setBasemapStyle(mode)}
-                className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                className={`px-2 py-1 rounded-md font-medium transition-all ${
                   basemapStyle === mode
                     ? 'bg-indigo-600 text-white shadow-2xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
@@ -508,7 +653,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
                   : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
               }`}
             >
-              Within Budget Only
+              In Budget
             </button>
           )}
 
@@ -535,7 +680,35 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
       </div>
 
       {/* Map + Search Container */}
-      <div className="relative w-full h-[460px] sm:h-[520px]">
+      <div className="relative w-full h-[480px] sm:h-[540px]">
+        {/* Floating Area Discovery Action Banner */}
+        {discoveredTown && !autoSyncArea && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 animate-in fade-in slide-in-from-top-2 duration-150">
+            <button
+              type="button"
+              onClick={() => {
+                isMapPannedRef.current = true;
+                onTownChange?.(discoveredTown);
+                setDiscoveredTown(null);
+              }}
+              className="px-4 py-2 rounded-full bg-indigo-600 text-white text-xs font-semibold shadow-lg hover:bg-indigo-700 transition-all flex items-center gap-2 border-2 border-white ring-4 ring-indigo-400/30"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Search {discoveredTown} area</span>
+            </button>
+          </div>
+        )}
+
+        {/* Floating Area Toast when Auto-Sync triggers */}
+        {areaToast && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 animate-in fade-in slide-in-from-top-2 duration-150">
+            <div className="px-3.5 py-1.5 rounded-full bg-slate-900/90 text-white text-xs font-medium backdrop-blur-xs shadow-lg flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+              <span>{areaToast}</span>
+            </div>
+          </div>
+        )}
+
         {/* Search Bar Overlay */}
         <div className="absolute top-3 left-3 right-3 sm:right-auto sm:w-80 z-20">
           <form onSubmit={handleSearchSubmit} className="relative">
@@ -649,7 +822,6 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    // Route to Town MRT (approx center)
                     requestRoute(townCenter[0], townCenter[1], `${town} MRT Station`, 'walk');
                   }}
                   disabled={isRouting}
@@ -722,8 +894,8 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
           </div>
         </div>
 
-        <div className="text-[11px] text-slate-400">
-          Showing up to 35 recent {town} transactions on map · Click any pin for unit breakdown & route planning
+        <div className="text-[11px] text-slate-500">
+          Showing <strong>{visibleCount}</strong> visible transactions in current view · Pan the map anywhere in Singapore to explore new areas
         </div>
       </div>
 
