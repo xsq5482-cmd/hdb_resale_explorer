@@ -110,6 +110,112 @@ interface GeocodedLocation {
   postal?: string;
 }
 
+// Generate Leaflet Marker DivIcon HTML
+function createMarkerIcon(price: number, inBudget: boolean, isSelected: boolean) {
+  const priceK = `$${(price / 1000).toFixed(0)}k`;
+  const markerHtml = `
+    <div class="cursor-pointer group select-none transition-transform duration-150 ${isSelected ? 'scale-120 z-50' : 'hover:scale-105'}">
+      <div class="relative flex items-center justify-center">
+        <div class="px-2 py-0.5 rounded-full text-[11px] font-bold shadow-md border flex items-center gap-1 ${
+          isSelected
+            ? 'bg-indigo-600 text-white border-white ring-3 ring-indigo-400'
+            : inBudget
+            ? 'bg-emerald-600 text-white border-white ring-1 ring-emerald-700/30'
+            : 'bg-slate-700 text-white border-slate-500 ring-1 ring-slate-800'
+        }">
+          <span>${priceK}</span>
+        </div>
+        <div class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 rotate-45 ${
+          isSelected ? 'bg-indigo-600' : inBudget ? 'bg-emerald-600' : 'bg-slate-700'
+        }"></div>
+      </div>
+    </div>
+  `;
+
+  return L.divIcon({
+    className: 'hdb-marker-icon',
+    html: markerHtml,
+    iconSize: [60, 26],
+    iconAnchor: [30, 24],
+    popupAnchor: [0, -22],
+  });
+}
+
+// Generate Popup HTML with Flat Specs & Nearest MRT Station
+function createPopupHtml(r: TransactionRecord, lat: number, lng: number, inBudget: boolean) {
+  const mrtInfo = getNearestMRTStation(lat, lng);
+
+  return `
+    <div class="p-3.5 bg-white text-slate-800 text-xs w-72 select-text font-sans rounded-2xl">
+      <!-- Location & Model Header -->
+      <div class="pb-2 border-b border-slate-100">
+        <div class="flex items-center justify-between gap-1 mb-1">
+          <span class="text-[10px] font-bold uppercase tracking-wider text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
+            ${r.flatType} · ${r.flatModel}
+          </span>
+          <span class="text-[10px] font-semibold ${inBudget ? 'text-emerald-700 bg-emerald-50' : 'text-slate-500 bg-slate-100'} px-1.5 py-0.5 rounded">
+            ${inBudget ? 'Within Budget' : 'Over Budget'}
+          </span>
+        </div>
+        <h4 class="font-bold text-slate-900 text-sm leading-snug">
+          ${r.block ? `Blk ${r.block} ` : ''}${r.streetName}
+        </h4>
+        <div class="text-[11px] text-slate-500 mt-0.5">
+          ${r.town} · Storey ${r.storeyRange}
+        </div>
+      </div>
+
+      <!-- Basic Flat Specs Grid -->
+      <div class="py-2.5 grid grid-cols-2 gap-2 text-xs border-b border-slate-100">
+        <div>
+          <span class="text-slate-400 text-[10px] uppercase font-semibold block">Resale Price</span>
+          <span class="text-sm font-bold text-slate-900">$${r.resalePrice.toLocaleString()}</span>
+          <span class="text-[10px] text-slate-500 block">$${r.pricePerSqm.toLocaleString()} / sqm</span>
+        </div>
+        <div>
+          <span class="text-slate-400 text-[10px] uppercase font-semibold block">Floor Area</span>
+          <span class="text-sm font-semibold text-slate-900">${r.floorAreaSqm} sqm</span>
+          <span class="text-[10px] text-slate-500 block">~${r.floorAreaSqft} sqft</span>
+        </div>
+        <div class="col-span-2 pt-1 flex items-center justify-between text-[11px]">
+          <span class="text-slate-500">Remaining Lease:</span>
+          <span class="font-semibold text-slate-800">${r.remainingLeaseYears} yrs (${r.remainingLease})</span>
+        </div>
+      </div>
+
+      <!-- Nearest MRT Station & Walking Minutes -->
+      <div class="mt-2.5 p-2 rounded-xl bg-amber-50/90 border border-amber-200 text-amber-950">
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Nearest MRT Station</span>
+          <span class="inline-flex items-center text-[11px] font-bold text-amber-900 bg-amber-200/80 px-2 py-0.5 rounded-full">
+            🚶 ${mrtInfo.walkingMinutes} mins walk
+          </span>
+        </div>
+        <div class="text-xs font-bold text-slate-900 mt-1 flex items-center justify-between">
+          <span>🚇 ${mrtInfo.station.name} MRT</span>
+          <span class="text-[10px] font-semibold text-amber-800 bg-white px-1.5 py-0.5 rounded border border-amber-200">
+            ${mrtInfo.station.code}
+          </span>
+        </div>
+        <div class="text-[10px] text-slate-500 mt-0.5 flex items-center justify-between">
+          <span>${mrtInfo.station.line}</span>
+          <span>~${mrtInfo.straightDistanceMeters}m away</span>
+        </div>
+
+        <button
+          type="button"
+          class="btn-walk-to-mrt mt-2 w-full py-1.5 px-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 shadow-2xs cursor-pointer"
+          data-lat="${mrtInfo.station.lat}"
+          data-lng="${mrtInfo.station.lng}"
+          data-name="${mrtInfo.station.name} MRT"
+        >
+          <span>Show Walking Route on Map</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
 export const MapNavigator: React.FC<MapNavigatorProps> = ({
   records,
   town,
@@ -129,9 +235,12 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
   const routeLayerRef = useRef<L.Polyline | null>(null);
   const mrtMarkerRef = useRef<L.Marker | null>(null);
   const searchMarkerRef = useRef<L.Marker | null>(null);
+
   const isMapPannedRef = useRef<boolean>(false);
+  const isUserDraggingRef = useRef<boolean>(false);
   const moveDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const markersMapRef = useRef<Map<string | number, L.Marker>>(new Map());
+  const markersMapRef = useRef<Map<string | number, { marker: L.Marker; record: TransactionRecord; inBudget: boolean }>>(new Map());
+  const selectedMarkerIdRef = useRef<string | number | null>(null);
 
   const [basemapStyle, setBasemapStyle] = useState<keyof typeof ONEMAP_BASEMAPS>('Default');
   const [inBudgetOnly, setInBudgetOnly] = useState(false);
@@ -214,353 +323,8 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     onVisibleRecordsChange?.(visibleIds);
   }, [records, coordsCache, townCenter, onVisibleRecordsChange]);
 
-  // Handle map movement end: updates visible records and detects town change
-  const handleMapMoveEnd = useCallback(() => {
-    if (!mapRef.current) return;
-
-    // 1. Immediately update visible records for the current viewport
-    updateVisibleRecords();
-
-    // 2. Check if center of map has moved to another HDB town
-    const center = mapRef.current.getCenter();
-    const nearest = findNearestTown(center.lat, center.lng);
-
-    if (nearest.town !== town) {
-      if (autoSyncArea) {
-        isMapPannedRef.current = true;
-        setAreaToast(`Area changed to ${nearest.town}`);
-        setTimeout(() => setAreaToast(null), 3000);
-        onTownChange?.(nearest.town);
-        setDiscoveredTown(null);
-      } else {
-        setDiscoveredTown(nearest.town);
-      }
-    } else {
-      setDiscoveredTown(null);
-    }
-  }, [town, autoSyncArea, onTownChange, updateVisibleRecords]);
-
-  // 1. Initialize Leaflet Map
-  useEffect(() => {
-    if (!mapContainerRef.current || mapRef.current) return;
-
-    const map = L.map(mapContainerRef.current, {
-      center: townCenter,
-      zoom: 14,
-      maxZoom: 19,
-      minZoom: 11,
-      zoomControl: false,
-    });
-
-    L.control.zoom({ position: 'bottomright' }).addTo(map);
-
-    const tileLayer = L.tileLayer(ONEMAP_BASEMAPS[basemapStyle].url, {
-      maxZoom: 19,
-      attribution:
-        'Map data © <a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener noreferrer">OneMap</a> | Singapore Land Authority',
-    }).addTo(map);
-
-    const markersGroup = L.layerGroup().addTo(map);
-
-    map.on('moveend', () => {
-      if (moveDebounceTimerRef.current) {
-        clearTimeout(moveDebounceTimerRef.current);
-      }
-      moveDebounceTimerRef.current = setTimeout(() => {
-        handleMapMoveEnd();
-      }, 350);
-    });
-
-    mapRef.current = map;
-    tileLayerRef.current = tileLayer;
-    markersLayerRef.current = markersGroup;
-
-    return () => {
-      if (moveDebounceTimerRef.current) clearTimeout(moveDebounceTimerRef.current);
-      map.remove();
-      mapRef.current = null;
-    };
-  }, []);
-
-  // Update visible records when records or cache change
-  useEffect(() => {
-    updateVisibleRecords();
-  }, [records, coordsCache, updateVisibleRecords]);
-
-  // 2. Change Basemap
-  useEffect(() => {
-    if (!tileLayerRef.current || !mapRef.current) return;
-    tileLayerRef.current.setUrl(ONEMAP_BASEMAPS[basemapStyle].url);
-  }, [basemapStyle]);
-
-  // 3. Pan to Town Center ONLY when changed from filter dropdown, NOT when user panned
-  useEffect(() => {
-    if (!mapRef.current) return;
-
-    if (isMapPannedRef.current) {
-      isMapPannedRef.current = false;
-      return;
-    }
-
-    mapRef.current.flyTo(townCenter, 14, { duration: 1.2 });
-  }, [town]);
-
-  // 4. Batch Geocode Unique Addresses in Current Records
-  useEffect(() => {
-    const uniqueAddresses = Array.from(
-      new Set(
-        records.slice(0, 40).map((r) => {
-          const blk = r.block ? `${r.block} ` : '';
-          return `${blk}${r.streetName}`.trim();
-        })
-      )
-    ).filter((addr) => !coordsCache[addr]);
-
-    if (uniqueAddresses.length === 0) return;
-
-    let isMounted = true;
-    setIsGeocoding(true);
-
-    const batchParam = encodeURIComponent(uniqueAddresses.join('|'));
-    fetch(`/api/onemap?action=batchGeocode&addresses=${batchParam}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (!isMounted) return;
-        if (data.results && Object.keys(data.results).length > 0) {
-          setCoordsCache((prev) => ({
-            ...prev,
-            ...data.results,
-          }));
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (isMounted) setIsGeocoding(false);
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [records, town]);
-
-  // 5. Render Markers on Map with Interactive Popup Widgets
-  useEffect(() => {
-    if (!mapRef.current || !markersLayerRef.current) return;
-
-    const layer = markersLayerRef.current;
-    layer.clearLayers();
-    markersMapRef.current.clear();
-
-    const displayRecords = inBudgetOnly && maxBudget !== null
-      ? records.filter((r) => r.resalePrice <= maxBudget)
-      : records;
-
-    displayRecords.slice(0, 40).forEach((r, idx) => {
-      const fullAddr = `${r.block ? `${r.block} ` : ''}${r.streetName}`.trim();
-      const cached = coordsCache[fullAddr];
-
-      let lat = townCenter[0];
-      let lng = townCenter[1];
-
-      if (cached && Number.isFinite(cached.lat) && Number.isFinite(cached.lng)) {
-        lat = cached.lat;
-        lng = cached.lng;
-      } else {
-        const angle = (idx / 35) * Math.PI * 2;
-        const radius = 0.003 + (idx % 5) * 0.002;
-        lat = townCenter[0] + Math.sin(angle) * radius;
-        lng = townCenter[1] + Math.cos(angle) * (radius * 1.2);
-      }
-
-      const inBudget = maxBudget === null || r.resalePrice <= maxBudget;
-      const isSelected = selectedRecordId === r.id;
-      const priceK = `$${(r.resalePrice / 1000).toFixed(0)}k`;
-
-      const markerHtml = `
-        <div class="cursor-pointer group select-none transition-transform duration-150 ${isSelected ? 'scale-115 z-50' : 'hover:scale-105'}">
-          <div class="relative flex items-center justify-center">
-            <div class="px-2 py-0.5 rounded-full text-[11px] font-bold shadow-md border flex items-center gap-1 ${
-              isSelected
-                ? 'bg-indigo-600 text-white border-white ring-3 ring-indigo-400'
-                : inBudget
-                ? 'bg-emerald-600 text-white border-white ring-1 ring-emerald-700/30'
-                : 'bg-slate-700 text-white border-slate-500 ring-1 ring-slate-800'
-            }">
-              <span>${priceK}</span>
-            </div>
-            <div class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 rotate-45 ${
-              isSelected ? 'bg-indigo-600' : inBudget ? 'bg-emerald-600' : 'bg-slate-700'
-            }"></div>
-          </div>
-        </div>
-      `;
-
-      const icon = L.divIcon({
-        className: 'hdb-marker-icon',
-        html: markerHtml,
-        iconSize: [60, 26],
-        iconAnchor: [30, 24],
-      });
-
-      const marker = L.marker([lat, lng], { icon });
-
-      // Calculate nearest MRT for this marker's popup
-      const mrtInfo = getNearestMRTStation(lat, lng);
-
-      // Embedded Rich Leaflet Popup Widget
-      const popupHtml = `
-        <div class="p-3.5 bg-white text-slate-800 text-xs w-72 select-text font-sans">
-          <!-- Location & Model Header -->
-          <div class="pb-2 border-b border-slate-100">
-            <div class="flex items-center justify-between gap-1 mb-1">
-              <span class="text-[10px] font-bold uppercase tracking-wider text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
-                ${r.flatType} · ${r.flatModel}
-              </span>
-              <span class="text-[10px] font-semibold ${inBudget ? 'text-emerald-700 bg-emerald-50' : 'text-slate-500 bg-slate-100'} px-1.5 py-0.5 rounded">
-                ${inBudget ? 'Within Budget' : 'Over Budget'}
-              </span>
-            </div>
-            <h4 class="font-bold text-slate-900 text-sm leading-snug">
-              ${r.block ? `Blk ${r.block} ` : ''}${r.streetName}
-            </h4>
-            <div class="text-[11px] text-slate-500 mt-0.5">
-              ${r.town} · Storey ${r.storeyRange}
-            </div>
-          </div>
-
-          <!-- Basic Flat Specs Grid -->
-          <div class="py-2.5 grid grid-cols-2 gap-2 text-xs border-b border-slate-100">
-            <div>
-              <span class="text-slate-400 text-[10px] uppercase font-semibold block">Resale Price</span>
-              <span class="text-sm font-bold text-slate-900">$${r.resalePrice.toLocaleString()}</span>
-              <span class="text-[10px] text-slate-500 block">$${r.pricePerSqm.toLocaleString()} / sqm</span>
-            </div>
-            <div>
-              <span class="text-slate-400 text-[10px] uppercase font-semibold block">Floor Area</span>
-              <span class="text-sm font-semibold text-slate-900">${r.floorAreaSqm} sqm</span>
-              <span class="text-[10px] text-slate-500 block">~${r.floorAreaSqft} sqft</span>
-            </div>
-            <div class="col-span-2 pt-1 flex items-center justify-between text-[11px]">
-              <span class="text-slate-500">Remaining Lease:</span>
-              <span class="font-semibold text-slate-800">${r.remainingLeaseYears} yrs (${r.remainingLease})</span>
-            </div>
-          </div>
-
-          <!-- Nearest MRT Station & Walking Minutes -->
-          <div class="mt-2.5 p-2 rounded-xl bg-amber-50/80 border border-amber-200 text-amber-950">
-            <div class="flex items-center justify-between">
-              <span class="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Nearest MRT Station</span>
-              <span class="inline-flex items-center text-[11px] font-bold text-amber-900 bg-amber-100/90 px-1.5 py-0.5 rounded-full">
-                🚶 ${mrtInfo.walkingMinutes} mins walk
-              </span>
-            </div>
-            <div class="text-xs font-bold text-slate-900 mt-1 flex items-center gap-1">
-              <span>🚇 ${mrtInfo.station.name} MRT</span>
-              <span class="text-[10px] font-semibold text-amber-700 bg-white px-1 rounded border border-amber-200">
-                ${mrtInfo.station.code}
-              </span>
-            </div>
-            <div class="text-[10px] text-slate-500 mt-0.5 flex items-center justify-between">
-              <span>${mrtInfo.station.line}</span>
-              <span>~${mrtInfo.straightDistanceMeters}m away</span>
-            </div>
-          </div>
-        </div>
-      `;
-
-      marker.bindPopup(popupHtml, {
-        className: 'hdb-flat-popup',
-        maxWidth: 320,
-        minWidth: 280,
-        offset: [0, -14],
-        closeButton: true,
-      });
-
-      marker.on('click', () => {
-        onSelectRecord(r);
-        marker.openPopup();
-        mapRef.current?.flyTo([lat, lng], 16, { duration: 0.8 });
-      });
-
-      markersMapRef.current.set(r.id, marker);
-      layer.addLayer(marker);
-    });
-  }, [records, coordsCache, inBudgetOnly, maxBudget, selectedRecordId, townCenter, onSelectRecord]);
-
-  // When selectedRecordId changes externally (e.g. table row click), pan and open marker popup
-  useEffect(() => {
-    if (!selectedRecordId || !mapRef.current) return;
-    const marker = markersMapRef.current.get(selectedRecordId);
-    if (marker) {
-      marker.openPopup();
-      const latLng = marker.getLatLng();
-      mapRef.current.flyTo(latLng, 16, { duration: 0.8 });
-    }
-  }, [selectedRecordId]);
-
-  // 6. Handle OneMap Search
-  const handleSearchSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
-
-    setIsSearching(true);
-    setSearchResults([]);
-
-    try {
-      const res = await fetch(`/api/onemap?action=search&searchVal=${encodeURIComponent(searchQuery.trim())}`);
-      const data = await res.json();
-      if (data.results && data.results.length > 0) {
-        setSearchResults(data.results.slice(0, 5));
-      } else {
-        setSearchResults([]);
-      }
-    } catch {
-      setSearchResults([]);
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  const selectSearchResult = (item: any) => {
-    const lat = parseFloat(item.LATITUDE);
-    const lng = parseFloat(item.LONGITUDE);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !mapRef.current) return;
-
-    if (searchMarkerRef.current) {
-      searchMarkerRef.current.remove();
-    }
-
-    const searchIcon = L.divIcon({
-      className: 'search-pin',
-      html: `
-        <div class="relative flex items-center justify-center">
-          <div class="w-8 h-8 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-lg border-2 border-white ring-4 ring-rose-300 animate-bounce">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-          </div>
-        </div>
-      `,
-      iconSize: [32, 32],
-      iconAnchor: [16, 32],
-    });
-
-    const marker = L.marker([lat, lng], { icon: searchIcon })
-      .addTo(mapRef.current)
-      .bindPopup(`<strong>${item.BUILDING !== 'NIL' ? item.BUILDING : item.SEARCHVAL}</strong><br/><span class="text-xs">${item.ADDRESS}</span>`)
-      .openPopup();
-
-    searchMarkerRef.current = marker;
-    mapRef.current.flyTo([lat, lng], 16, { duration: 1.0 });
-    setSearchResults([]);
-
-    const nearest = findNearestTown(lat, lng);
-    if (nearest.town !== town && onTownChange) {
-      isMapPannedRef.current = true;
-      onTownChange(nearest.town);
-    }
-  };
-
-  // 7. Request Route to Destination / MRT using OneMap Routing
-  const requestRoute = async (destLat: number, destLng: number, destName: string, mode: string = 'walk') => {
+  // Request Route to Destination / MRT using OneMap Routing
+  const requestRoute = useCallback(async (destLat: number, destLng: number, destName: string, mode: string = 'walk') => {
     if (!selectedCoords) return;
 
     setIsRouting(true);
@@ -642,7 +406,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     } finally {
       setIsRouting(false);
     }
-  };
+  }, [selectedCoords]);
 
   const drawStraightLineRoute = (from: [number, number], to: [number, number]) => {
     if (!mapRef.current) return;
@@ -685,6 +449,332 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
     }
     return coordinates;
   }
+
+  // Handle map movement end: updates visible records and detects town change only if user dragged
+  const handleMapMoveEnd = useCallback(() => {
+    if (!mapRef.current) return;
+
+    // 1. Immediately update visible records for the current viewport
+    updateVisibleRecords();
+
+    // 2. Check if center of map has moved to another HDB town ONLY if user actively dragged the map
+    if (isUserDraggingRef.current) {
+      isUserDraggingRef.current = false;
+      const center = mapRef.current.getCenter();
+      const nearest = findNearestTown(center.lat, center.lng);
+
+      if (nearest.town !== town) {
+        if (autoSyncArea) {
+          isMapPannedRef.current = true;
+          setAreaToast(`Area changed to ${nearest.town}`);
+          setTimeout(() => setAreaToast(null), 3000);
+          onTownChange?.(nearest.town);
+          setDiscoveredTown(null);
+        } else {
+          setDiscoveredTown(nearest.town);
+        }
+      } else {
+        setDiscoveredTown(null);
+      }
+    }
+  }, [town, autoSyncArea, onTownChange, updateVisibleRecords]);
+
+  // 1. Initialize Leaflet Map
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) return;
+
+    const map = L.map(mapContainerRef.current, {
+      center: townCenter,
+      zoom: 14,
+      maxZoom: 19,
+      minZoom: 11,
+      zoomControl: false,
+      closePopupOnClick: false, // Prevent accidental dismissal on subtle map drag or click
+    });
+
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    const tileLayer = L.tileLayer(ONEMAP_BASEMAPS[basemapStyle].url, {
+      maxZoom: 19,
+      attribution:
+        'Map data © <a href="https://www.onemap.gov.sg/" target="_blank" rel="noopener noreferrer">OneMap</a> | Singapore Land Authority',
+    }).addTo(map);
+
+    const markersGroup = L.layerGroup().addTo(map);
+
+    // Track user drag state to distinguish from programmatic flyTo
+    map.on('dragstart', () => {
+      isUserDraggingRef.current = true;
+    });
+
+    // When the user clicks an empty area of the map ("other area"), dismiss popup and widget
+    map.on('click', () => {
+      onSelectRecord(null);
+      map.closePopup();
+      if (routeLayerRef.current) routeLayerRef.current.remove();
+      if (mrtMarkerRef.current) mrtMarkerRef.current.remove();
+      setActiveRoute(null);
+    });
+
+    // Attach handler for the "Walk to MRT" button rendered inside the Leaflet popup
+    map.on('popupopen', (e) => {
+      const popupEl = e.popup.getElement();
+      if (!popupEl) return;
+      const walkBtn = popupEl.querySelector('.btn-walk-to-mrt') as HTMLButtonElement | null;
+      if (walkBtn) {
+        walkBtn.onclick = (event) => {
+          event.stopPropagation();
+          const lat = parseFloat(walkBtn.dataset.lat || '0');
+          const lng = parseFloat(walkBtn.dataset.lng || '0');
+          const name = walkBtn.dataset.name || 'MRT Station';
+          requestRoute(lat, lng, name, 'walk');
+        };
+      }
+    });
+
+    map.on('moveend', () => {
+      if (moveDebounceTimerRef.current) {
+        clearTimeout(moveDebounceTimerRef.current);
+      }
+      moveDebounceTimerRef.current = setTimeout(() => {
+        handleMapMoveEnd();
+      }, 300);
+    });
+
+    mapRef.current = map;
+    tileLayerRef.current = tileLayer;
+    markersLayerRef.current = markersGroup;
+
+    return () => {
+      if (moveDebounceTimerRef.current) clearTimeout(moveDebounceTimerRef.current);
+      map.remove();
+      mapRef.current = null;
+    };
+  }, [requestRoute]);
+
+  // Update visible records when records or cache change
+  useEffect(() => {
+    updateVisibleRecords();
+  }, [records, coordsCache, updateVisibleRecords]);
+
+  // 2. Change Basemap
+  useEffect(() => {
+    if (!tileLayerRef.current || !mapRef.current) return;
+    tileLayerRef.current.setUrl(ONEMAP_BASEMAPS[basemapStyle].url);
+  }, [basemapStyle]);
+
+  // 3. Pan to Town Center ONLY when changed from filter dropdown, NOT when user panned
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    if (isMapPannedRef.current) {
+      isMapPannedRef.current = false;
+      return;
+    }
+
+    mapRef.current.flyTo(townCenter, 14, { duration: 1.2 });
+  }, [town]);
+
+  // 4. Batch Geocode Unique Addresses in Current Records
+  useEffect(() => {
+    const uniqueAddresses = Array.from(
+      new Set(
+        records.slice(0, 40).map((r) => {
+          const blk = r.block ? `${r.block} ` : '';
+          return `${blk}${r.streetName}`.trim();
+        })
+      )
+    ).filter((addr) => !coordsCache[addr]);
+
+    if (uniqueAddresses.length === 0) return;
+
+    let isMounted = true;
+    setIsGeocoding(true);
+
+    const batchParam = encodeURIComponent(uniqueAddresses.join('|'));
+    fetch(`/api/onemap?action=batchGeocode&addresses=${batchParam}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!isMounted) return;
+        if (data.results && Object.keys(data.results).length > 0) {
+          setCoordsCache((prev) => ({
+            ...prev,
+            ...data.results,
+          }));
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (isMounted) setIsGeocoding(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [records, town]);
+
+  // 5. Render Markers on Map (stable creation without selectedRecordId in dependencies)
+  useEffect(() => {
+    if (!mapRef.current || !markersLayerRef.current) return;
+
+    const layer = markersLayerRef.current;
+    layer.clearLayers();
+    markersMapRef.current.clear();
+    selectedMarkerIdRef.current = null;
+
+    const displayRecords = inBudgetOnly && maxBudget !== null
+      ? records.filter((r) => r.resalePrice <= maxBudget)
+      : records;
+
+    displayRecords.slice(0, 40).forEach((r, idx) => {
+      const fullAddr = `${r.block ? `${r.block} ` : ''}${r.streetName}`.trim();
+      const cached = coordsCache[fullAddr];
+
+      let lat = townCenter[0];
+      let lng = townCenter[1];
+
+      if (cached && Number.isFinite(cached.lat) && Number.isFinite(cached.lng)) {
+        lat = cached.lat;
+        lng = cached.lng;
+      } else {
+        const angle = (idx / 35) * Math.PI * 2;
+        const radius = 0.003 + (idx % 5) * 0.002;
+        lat = townCenter[0] + Math.sin(angle) * radius;
+        lng = townCenter[1] + Math.cos(angle) * (radius * 1.2);
+      }
+
+      const inBudget = maxBudget === null || r.resalePrice <= maxBudget;
+      const isSelected = selectedRecordId === r.id;
+
+      const icon = createMarkerIcon(r.resalePrice, inBudget, isSelected);
+      const marker = L.marker([lat, lng], { icon });
+
+      // Embedded Rich Leaflet Popup Widget with flat specs and nearest MRT
+      const popupHtml = createPopupHtml(r, lat, lng, inBudget);
+
+      marker.bindPopup(popupHtml, {
+        className: 'hdb-flat-popup',
+        maxWidth: 320,
+        minWidth: 280,
+        autoClose: true,
+        closeOnClick: false, // Prevents closing when clicking near or dragging
+        closeButton: true,
+        autoPan: true,
+        autoPanPadding: [50, 50],
+      });
+
+      // Click event: select flat, open popup, and stop event from bubbling to map.on('click')
+      marker.on('click', (e) => {
+        L.DomEvent.stopPropagation(e);
+        onSelectRecord(r);
+        marker.openPopup();
+      });
+
+      markersMapRef.current.set(r.id, { marker, record: r, inBudget });
+      layer.addLayer(marker);
+
+      if (isSelected) {
+        selectedMarkerIdRef.current = r.id;
+        marker.setZIndexOffset(1000);
+        setTimeout(() => marker.openPopup(), 50);
+      }
+    });
+  }, [records, coordsCache, inBudgetOnly, maxBudget, townCenter, onSelectRecord]);
+
+  // 6. Synchronize Selection without rebuilding markers (keeps popup open persistently)
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    // 1. Revert previous selected marker style if changed
+    if (selectedMarkerIdRef.current && selectedMarkerIdRef.current !== selectedRecordId) {
+      const prev = markersMapRef.current.get(selectedMarkerIdRef.current);
+      if (prev) {
+        prev.marker.setIcon(createMarkerIcon(prev.record.resalePrice, prev.inBudget, false));
+        prev.marker.setZIndexOffset(0);
+      }
+    }
+
+    // 2. Highlight and open popup for new selected marker
+    if (selectedRecordId) {
+      const current = markersMapRef.current.get(selectedRecordId);
+      if (current) {
+        current.marker.setIcon(createMarkerIcon(current.record.resalePrice, current.inBudget, true));
+        current.marker.setZIndexOffset(1000);
+        current.marker.openPopup();
+
+        // Softly center if marker is not well inside view bounds
+        const latLng = current.marker.getLatLng();
+        if (mapRef.current && !mapRef.current.getBounds().pad(-0.1).contains(latLng)) {
+          mapRef.current.panTo(latLng, { animate: true, duration: 0.5 });
+        }
+      }
+      selectedMarkerIdRef.current = selectedRecordId;
+    } else {
+      selectedMarkerIdRef.current = null;
+      mapRef.current.closePopup();
+    }
+  }, [selectedRecordId]);
+
+  // 7. Handle OneMap Search
+  const handleSearchSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+
+    setIsSearching(true);
+    setSearchResults([]);
+
+    try {
+      const res = await fetch(`/api/onemap?action=search&searchVal=${encodeURIComponent(searchQuery.trim())}`);
+      const data = await res.json();
+      if (data.results && data.results.length > 0) {
+        setSearchResults(data.results.slice(0, 5));
+      } else {
+        setSearchResults([]);
+      }
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const selectSearchResult = (item: any) => {
+    const lat = parseFloat(item.LATITUDE);
+    const lng = parseFloat(item.LONGITUDE);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !mapRef.current) return;
+
+    if (searchMarkerRef.current) {
+      searchMarkerRef.current.remove();
+    }
+
+    const searchIcon = L.divIcon({
+      className: 'search-pin',
+      html: `
+        <div class="relative flex items-center justify-center">
+          <div class="w-8 h-8 rounded-full bg-rose-600 text-white flex items-center justify-center shadow-lg border-2 border-white ring-4 ring-rose-300 animate-bounce">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+          </div>
+        </div>
+      `,
+      iconSize: [32, 32],
+      iconAnchor: [16, 32],
+    });
+
+    const marker = L.marker([lat, lng], { icon: searchIcon })
+      .addTo(mapRef.current)
+      .bindPopup(`<strong>${item.BUILDING !== 'NIL' ? item.BUILDING : item.SEARCHVAL}</strong><br/><span class="text-xs">${item.ADDRESS}</span>`)
+      .openPopup();
+
+    searchMarkerRef.current = marker;
+    mapRef.current.flyTo([lat, lng], 16, { duration: 1.0 });
+    setSearchResults([]);
+
+    const nearest = findNearestTown(lat, lng);
+    if (nearest.town !== town && onTownChange) {
+      isMapPannedRef.current = true;
+      onTownChange(nearest.town);
+    }
+  };
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
@@ -878,9 +968,12 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
           )}
         </div>
 
-        {/* Selected Property Popup Information Widget */}
+        {/* Selected Property Popup Information Widget (Persistent Card) */}
         {selectedRecord && (
-          <div className="absolute top-3 right-3 z-20 max-w-xs sm:max-w-sm w-full bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200 p-4 animate-in fade-in slide-in-from-right-4 duration-200">
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute top-3 right-3 z-20 max-w-xs sm:max-w-sm w-full bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200 p-4 animate-in fade-in slide-in-from-right-4 duration-200"
+          >
             {/* Header: Location & Model */}
             <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100">
               <div>
@@ -905,6 +998,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
                 type="button"
                 onClick={() => {
                   onSelectRecord(null);
+                  mapRef.current?.closePopup();
                   if (routeLayerRef.current) routeLayerRef.current.remove();
                   if (mrtMarkerRef.current) mrtMarkerRef.current.remove();
                   setActiveRoute(null);
@@ -979,7 +1073,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
 
                   <div className="flex items-center justify-between text-[11px] text-slate-500 mt-0.5">
                     <span>{nearestMRT.station.line}</span>
-                    <span>~{nearestMRT.straightDistanceMeters}m straight-line</span>
+                    <span>~${nearestMRT.straightDistanceMeters}m straight-line</span>
                   </div>
 
                   {/* Quick Action: Draw Walking Route to this MRT */}
@@ -995,7 +1089,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
                         );
                       }}
                       disabled={isRouting}
-                      className="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 shadow-2xs disabled:opacity-50"
+                      className="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-semibold transition-colors flex items-center justify-center gap-1 shadow-2xs disabled:opacity-50 cursor-pointer"
                     >
                       <Footprints className="w-3.5 h-3.5" />
                       <span>{isRouting ? 'Calculating...' : `Walk to ${nearestMRT.station.name} MRT`}</span>
@@ -1007,7 +1101,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
                         requestRoute(1.2841, 103.8515, 'Raffles Place (CBD)', 'pt');
                       }}
                       disabled={isRouting}
-                      className="py-1.5 px-2.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold transition-colors border border-slate-200 shadow-2xs"
+                      className="py-1.5 px-2.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 text-[11px] font-semibold transition-colors border border-slate-200 shadow-2xs cursor-pointer"
                       title="Route to Central Business District"
                     >
                       CBD Transit
@@ -1067,7 +1161,7 @@ export const MapNavigator: React.FC<MapNavigatorProps> = ({
         </div>
 
         <div className="text-[11px] text-slate-500">
-          Showing <strong>{visibleCount}</strong> visible transactions · Click any property pin to pop up flat specifications & nearest MRT walking minutes
+          Showing <strong>{visibleCount}</strong> visible transactions · Click any property pin to pop up flat specs & nearest MRT walking minutes · Click outside/other area to dismiss
         </div>
       </div>
 
